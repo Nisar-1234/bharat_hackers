@@ -283,10 +283,17 @@ class DocumentProcessor:
             )
             data_source_id = ds_response['dataSourceSummaries'][0]['dataSourceId']
 
-            self.bedrock_agent_client.start_ingestion_job(
-                knowledgeBaseId=self.config.knowledge_base_id,
-                dataSourceId=data_source_id
-            )
+            try:
+                self.bedrock_agent_client.start_ingestion_job(
+                    knowledgeBaseId=self.config.knowledge_base_id,
+                    dataSourceId=data_source_id
+                )
+            except ClientError as e:
+                # ConflictException means an ingestion job is already running.
+                # Chunks are already in S3 so they will be picked up when
+                # the current job finishes or on the next sync — not a failure.
+                if e.response['Error']['Code'] != 'ConflictException':
+                    raise
 
             return True
 
