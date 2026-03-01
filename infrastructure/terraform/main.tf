@@ -41,36 +41,44 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "documents" {
   }
 }
 
-# Aurora PostgreSQL Cluster
-resource "aws_rds_cluster" "jansahayak" {
-  cluster_identifier      = "jansahayak-db"
-  engine                  = "aurora-postgresql"
-  engine_mode             = "provisioned"
-  engine_version          = "15.3"
-  database_name           = "jansahayak"
-  master_username         = var.db_username
-  master_password         = var.db_password
-  backup_retention_period = 7
-  preferred_backup_window = "03:00-04:00"
-  skip_final_snapshot     = var.environment == "dev"
-  
-  serverlessv2_scaling_configuration {
-    max_capacity = 2.0
-    min_capacity = 0.5
+# DynamoDB Table (single-table design)
+resource "aws_dynamodb_table" "jansahayak" {
+  name         = var.dynamodb_table_name
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "PK"
+  range_key    = "SK"
+
+  attribute {
+    name = "PK"
+    type = "S"
   }
-  
+
+  attribute {
+    name = "SK"
+    type = "S"
+  }
+
+  attribute {
+    name = "GSI1PK"
+    type = "S"
+  }
+
+  attribute {
+    name = "GSI1SK"
+    type = "S"
+  }
+
+  global_secondary_index {
+    name            = "GSI1"
+    hash_key        = "GSI1PK"
+    range_key       = "GSI1SK"
+    projection_type = "ALL"
+  }
+
   tags = {
-    Name        = "Jansahayak DB"
+    Name        = "Jansahayak Data"
     Environment = var.environment
   }
-}
-
-resource "aws_rds_cluster_instance" "jansahayak" {
-  identifier         = "jansahayak-db-instance"
-  cluster_identifier = aws_rds_cluster.jansahayak.id
-  instance_class     = "db.serverless"
-  engine             = aws_rds_cluster.jansahayak.engine
-  engine_version     = aws_rds_cluster.jansahayak.engine_version
 }
 
 # IAM Role for Lambda
@@ -95,6 +103,15 @@ resource "aws_iam_role_policy_attachment" "lambda_basic" {
 }
 
 # Lambda Functions
+locals {
+  lambda_env = {
+    S3_BUCKET_NAME      = aws_s3_bucket.documents.id
+    DYNAMODB_TABLE_NAME = aws_dynamodb_table.jansahayak.name
+    KNOWLEDGE_BASE_ID   = var.knowledge_base_id
+    AWS_ACCOUNT_ID      = data.aws_caller_identity.current.account_id
+  }
+}
+
 resource "aws_lambda_function" "document_processor" {
   filename      = "lambda_deployment.zip"
   function_name = "jansahayak-document-processor"
@@ -103,14 +120,9 @@ resource "aws_lambda_function" "document_processor" {
   runtime       = "python3.11"
   timeout       = 300
   memory_size   = 2048
-  
+
   environment {
-    variables = {
-      S3_BUCKET_NAME     = aws_s3_bucket.documents.id
-      DB_HOST            = aws_rds_cluster.jansahayak.endpoint
-      DB_NAME            = aws_rds_cluster.jansahayak.database_name
-      KNOWLEDGE_BASE_ID  = var.knowledge_base_id
-    }
+    variables = local.lambda_env
   }
 }
 
@@ -122,14 +134,9 @@ resource "aws_lambda_function" "query_engine" {
   runtime       = "python3.11"
   timeout       = 15
   memory_size   = 1024
-  
+
   environment {
-    variables = {
-      S3_BUCKET_NAME     = aws_s3_bucket.documents.id
-      DB_HOST            = aws_rds_cluster.jansahayak.endpoint
-      DB_NAME            = aws_rds_cluster.jansahayak.database_name
-      KNOWLEDGE_BASE_ID  = var.knowledge_base_id
-    }
+    variables = local.lambda_env
   }
 }
 
@@ -141,14 +148,9 @@ resource "aws_lambda_function" "voice_interface" {
   runtime       = "python3.11"
   timeout       = 30
   memory_size   = 1536
-  
+
   environment {
-    variables = {
-      S3_BUCKET_NAME     = aws_s3_bucket.documents.id
-      DB_HOST            = aws_rds_cluster.jansahayak.endpoint
-      DB_NAME            = aws_rds_cluster.jansahayak.database_name
-      KNOWLEDGE_BASE_ID  = var.knowledge_base_id
-    }
+    variables = local.lambda_env
   }
 }
 
@@ -179,8 +181,8 @@ output "s3_bucket" {
   value = aws_s3_bucket.documents.id
 }
 
-output "db_endpoint" {
-  value = aws_rds_cluster.jansahayak.endpoint
+output "dynamodb_table_name" {
+  value = aws_dynamodb_table.jansahayak.name
 }
 
 data "aws_caller_identity" "current" {}

@@ -12,6 +12,7 @@ from .models import (
 from ..components.document_processor import DocumentProcessor
 from ..components.query_engine import QueryEngine
 from ..components.voice_interface import VoiceInterface
+from ..database.dynamodb_client import DynamoDBClient
 from ..models.enums import SupportedLanguage
 from ..utils.error_handler import create_error_response
 
@@ -35,6 +36,7 @@ app.add_middleware(
 document_processor = DocumentProcessor()
 query_engine = QueryEngine()
 voice_interface = VoiceInterface()
+db = DynamoDBClient()
 
 
 @app.get("/")
@@ -73,14 +75,20 @@ async def upload_document(file: UploadFile = File(...)):
 
 
 @app.get("/documents", response_model=List[DocumentResponse])
-async def list_documents(limit: int = 10, offset: int = 0):
-    """
-    List all uploaded documents.
-    
-    Supports pagination with limit and offset.
-    """
-    # TODO: Implement database query
-    return []
+async def list_documents(limit: int = 10, status: str = None):
+    """List uploaded documents, optionally filtered by status."""
+    documents = db.list_documents(status=status, limit=limit)
+    return [
+        DocumentResponse(
+            document_id=doc.document_id,
+            filename=doc.filename,
+            status=doc.status.value,
+            upload_date=doc.upload_date.isoformat(),
+            chunk_count=doc.chunk_count,
+            file_size_bytes=doc.file_size_bytes,
+        )
+        for doc in documents
+    ]
 
 
 @app.get("/documents/{document_id}/status", response_model=DocumentResponse)

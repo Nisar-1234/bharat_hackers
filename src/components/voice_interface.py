@@ -136,26 +136,25 @@ class VoiceInterface:
     async def synthesize_speech(self, text: str, language: SupportedLanguage) -> bytes:
         """
         Convert text to speech using AWS Polly.
-        
-        Uses neural voices for supported languages:
-        - Hindi: Aditi (neural)
-        - Telugu: Standard voice
-        - Tamil: Standard voice
+
+        Voice mapping:
+        - Hindi/Telugu/Tamil: Aditi (standard only — neural not supported)
+        - English: Joanna (neural supported)
         """
-        # Map languages to Polly voice IDs
         voice_map = {
-            SupportedLanguage.HINDI: 'Aditi',
-            SupportedLanguage.TELUGU: 'Aditi',  # Polly doesn't have Telugu, use Hindi
-            SupportedLanguage.TAMIL: 'Aditi',   # Polly doesn't have Tamil, use Hindi
-            SupportedLanguage.ENGLISH: 'Joanna'
+            SupportedLanguage.HINDI: ('Aditi', 'standard'),
+            SupportedLanguage.TELUGU: ('Aditi', 'standard'),
+            SupportedLanguage.TAMIL: ('Aditi', 'standard'),
+            SupportedLanguage.ENGLISH: ('Joanna', 'neural'),
         }
-        
+
         try:
+            voice_id, engine = voice_map[language]
             response = self.polly_client.synthesize_speech(
                 Text=text,
                 OutputFormat='mp3',
-                VoiceId=voice_map[language],
-                Engine='neural' if language in [SupportedLanguage.HINDI, SupportedLanguage.ENGLISH] else 'standard'
+                VoiceId=voice_id,
+                Engine=engine,
             )
             
             audio_bytes = response['AudioStream'].read()

@@ -8,6 +8,7 @@ from botocore.exceptions import ClientError
 
 from ..models.query import QueryResult, Citation, RetrievedChunk
 from ..config import load_config
+from ..database.dynamodb_client import DynamoDBClient
 
 
 class QueryEngine:
@@ -17,6 +18,7 @@ class QueryEngine:
         self.config = load_config()
         self.bedrock_agent_runtime = boto3.client('bedrock-agent-runtime', region_name=self.config.region)
         self.bedrock_runtime = boto3.client('bedrock-runtime', region_name=self.config.region)
+        self.db = DynamoDBClient()
     
     async def query(self, query_text: str, language: str = "en") -> QueryResult:
         """
@@ -47,14 +49,21 @@ class QueryEngine:
         answer, citations = await self.generate_response(query_text, chunks)
         
         processing_time = int((time.time() - start_time) * 1000)
-        
-        # TODO: Log query to Aurora
-        
+        query_id = str(uuid.uuid4())
+
+        self.db.log_query(
+            query_id=query_id,
+            query_text=query_text,
+            source_language=language,
+            response_text=answer,
+            processing_time_ms=processing_time,
+        )
+
         return QueryResult(
             answer=answer,
             citations=citations,
-            query_id=str(uuid.uuid4()),
-            processing_time_ms=processing_time
+            query_id=query_id,
+            processing_time_ms=processing_time,
         )
     
     async def retrieve_relevant_chunks(self, query_text: str, top_k: int = 5) -> List[RetrievedChunk]:
@@ -130,24 +139,13 @@ Instructions:
 Answer:"""
         
         try:
-            # Call Claude 3 Sonnet
-            response = self.bedrock_runtime.invoke_model(
+            # Use Converse API — works for both Claude and Nova models
+            response = self.bedrock_runtime.converse(
                 modelId=self.config.bedrock_model_id,
-                body=json.dumps({
-                    "anthropic_version": "bedrock-2023-05-31",
-                    "max_tokens": 1000,
-                    "temperature": 0.3,
-                    "messages": [
-                        {
-                            "role": "user",
-                            "content": prompt
-                        }
-                    ]
-                })
+                messages=[{"role": "user", "content": [{"text": prompt}]}],
+                inferenceConfig={"maxTokens": 1000, "temperature": 0.3}
             )
-            
-            response_body = json.loads(response['body'].read())
-            answer = response_body['content'][0]['text']
+            answer = response['output']['message']['content'][0]['text']
             
             # Extract citations
             citations = self.extract_citations(answer, context_chunks)

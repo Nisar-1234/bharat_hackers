@@ -10,17 +10,10 @@ variable "environment" {
   default     = "dev"
 }
 
-variable "db_username" {
-  description = "Database master username"
+variable "dynamodb_table_name" {
+  description = "DynamoDB table name for documents, chunks, and query logs"
   type        = string
-  default     = "admin"
-  sensitive   = true
-}
-
-variable "db_password" {
-  description = "Database master password"
-  type        = string
-  sensitive   = true
+  default     = "jansahayak-data"
 }
 
 variable "knowledge_base_id" {

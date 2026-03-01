@@ -10,9 +10,9 @@ This directory contains infrastructure as code for deploying Jansahayak.
 
 ## Components
 
-1. **S3 Buckets**: Document storage
-2. **Aurora PostgreSQL**: Metadata and query logs
-3. **Amazon Bedrock Knowledge Base**: Vector search
+1. **S3 Buckets**: Document storage (raw uploads, processed text, kb-chunks, audio)
+2. **DynamoDB**: Single-table design for document metadata, chunks, and query logs
+3. **Amazon Bedrock Knowledge Base**: Vector search (OpenSearch Serverless backend)
 4. **Lambda Functions**: Compute layer
 5. **API Gateway**: REST API endpoints
 
@@ -42,7 +42,7 @@ Update `terraform.tfvars` or `cdk.json` with your AWS account details and prefer
 ## Resources Created
 
 - S3 bucket: `jansahayak-documents-{account-id}`
-- Aurora cluster: `jansahayak-db`
-- Knowledge Base: `jansahayak-kb`
+- DynamoDB table: `jansahayak-data` (PAY_PER_REQUEST, GSI1 on `GSI1PK`/`GSI1SK`)
+- Knowledge Base: `jansahayak-kb` (created manually in Bedrock console, not via Terraform)
 - Lambda functions: `jansahayak-document-processor`, `jansahayak-query-engine`, `jansahayak-voice-interface`
 - API Gateway: `jansahayak-api`
