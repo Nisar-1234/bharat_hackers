@@ -68,6 +68,7 @@ All three Lambda functions serve the same FastAPI app (via Mangum). They differ 
 | Voice | AWS Transcribe, Translate, Polly |
 | Storage | Amazon S3, DynamoDB (single-table) |
 | Frontend | Streamlit |
+| Resilience | Circuit breaker (per-service) + exponential backoff retry |
 | IaC | Terraform (`infrastructure/terraform/`) |
 
 ## Project Structure
@@ -146,7 +147,7 @@ run_all.bat     # Windows CMD / PowerShell
 | `GET` | `/documents` | List documents (`?status=completed&limit=10`) |
 | `GET` | `/documents/{id}/status` | Get processing status |
 | `POST` | `/query/text` | Text query → semantic search + cited answer |
-| `POST` | `/query/voice` | MP3 audio + language → transcription + answer + voice response |
+| `POST` | `/query/voice` | MP3 audio + language → transcription + answer + presigned audio URL |
 
 ### Example: Text Query
 
@@ -181,7 +182,17 @@ curl -X POST "http://localhost:8000/query/voice" \
   -F "language=hi"
 ```
 
-> Voice input must be **MP3 format**. Supported language codes: `en`, `hi`, `te`, `ta`.
+**Response:**
+```json
+{
+  "transcribed_text": "पीएम किसान के लिए पात्रता क्या है?",
+  "answer_text": "छोटे और सीमांत किसान जिनके पास 2 हेक्टेयर से कम जमीन है...",
+  "audio_url": "https://s3.amazonaws.com/jansahayak-documents/audio/.../response.mp3?...",
+  "citations": [...]
+}
+```
+
+> Voice input must be **MP3 format**. `audio_url` is a presigned HTTPS URL valid for 1 hour. Supported language codes: `en`, `hi`, `te`, `ta`.
 
 ## Data Pipeline
 
@@ -210,29 +221,54 @@ Query text
 **Voice query:**
 ```
 MP3 audio
-  → S3 upload → Transcribe async job (language: hi-IN / te-IN / ta-IN / en-IN)
+  → S3 upload → Transcribe async job (hi-IN / te-IN / ta-IN / en-IN)
   → Translate to English (AWS Translate)
-  → QueryEngine (same as text query)
+  → QueryEngine (same as text query above)
   → Translate answer back to user language
-  → Polly TTS (Aditi/standard for hi/te/ta, Joanna/neural for en)
+  → Polly TTS (Aditi/standard for hi/te/ta — Joanna/neural for en)
   → S3 audio/<query_id>/response.mp3
+  → Presigned HTTPS URL returned (1-hour expiry)
 ```
+
+## Resilience
+
+Every critical AWS service call is protected by two layers:
+
+**Circuit breaker** (per service, `src/utils/circuit_breaker.py`):
+
+| Component | Breaker | Protects |
+|-----------|---------|---------|
+| QueryEngine | `_kb_breaker` | Bedrock KB `retrieve()` |
+| QueryEngine | `_bedrock_breaker` | Bedrock `converse()` |
+| DocumentProcessor | `_textract_breaker` | Textract `detect_document_text()` |
+| VoiceInterface | `_translate_breaker` | Translate (both directions) |
+| VoiceInterface | `_polly_breaker` | Polly `synthesize_speech()` |
+
+Opens after 5 failures in 60 seconds; recovers after 30 seconds.
+
+**Retry with exponential backoff** (`src/utils/retry.py`): max 3 retries, 1s base delay, 30s cap — applied to `ThrottlingException`, `ServiceUnavailableException`, `InternalServerException`.
 
 ## Testing
 
 ```bash
 pytest tests/                    # all tests
-pytest tests/ -m unit            # unit tests only
+pytest tests/ -m unit            # unit tests only (no AWS credentials needed)
 pytest tests/ -m integration     # requires real AWS credentials
 pytest tests/path/test_file.py::TestClass::test_name  # single test
 ```
 
-> The test suite is currently empty. Markers (`unit`, `integration`, `property`) are configured in `pytest.ini` with `asyncio_mode = auto`.
+Unit tests in `tests/test_unit.py` cover the two core pure functions with no AWS dependencies:
+
+**Chunking (8 tests):** empty input, single chunk, multiple chunks, 200-char overlap enforcement, 1000-char max size, unique chunk IDs, content matches source slice, last chunk reaches end of text.
+
+**Citation extraction (8 tests):** no citations, citation with page number, citation without page (falls back to chunk page), duplicate deduplication, out-of-range document number ignored, excerpt content, confidence score from chunk relevance, multiple distinct citations.
 
 ## Lambda Deployment
 
+> Lambda runs on Linux. Always build with Linux platform flags — plain `pip install -t` on Windows installs Windows `.pyd` binaries that fail with `No module named 'pydantic_core._pydantic_core'` at runtime.
+
 ```bash
-# Build Linux-compatible package (required even on Windows)
+# Build Linux-compatible package
 rm -rf lambda-package && mkdir lambda-package
 pip install \
   --platform manylinux2014_x86_64 \
@@ -261,7 +297,9 @@ for func in document-processor query-engine voice-interface; do
 done
 ```
 
-See [AWS_SETUP.md](AWS_SETUP.md) for full first-time AWS infrastructure setup, [DEPLOYMENT.md](DEPLOYMENT.md) for the deployment checklist, and [RUN.md](RUN.md) for end-to-end testing commands.
+Handler format must be `src.handlers.<module>.handler` (e.g. `src.handlers.query_handler.handler`). Do not pass `AWS_REGION` in Lambda environment variables — it is reserved and injected automatically.
+
+See `AWS_SETUP.md` for full first-time AWS infrastructure setup, `DEPLOYMENT.md` for the deployment checklist, and `RUN.md` for end-to-end testing commands.
 
 ## Key Configuration
 
@@ -269,7 +307,7 @@ All settings are loaded by `src/config.py` from environment variables:
 
 | Variable | Default | Notes |
 |----------|---------|-------|
-| `AWS_REGION` | `us-east-1` | Do NOT set in Lambda env — it's reserved |
+| `AWS_REGION` | `us-east-1` | Do NOT set in Lambda env — it is reserved |
 | `S3_BUCKET_NAME` | `jansahayak-documents` | |
 | `DYNAMODB_TABLE_NAME` | `jansahayak-data` | |
 | `KNOWLEDGE_BASE_ID` | *(required)* | Created in Bedrock console |
@@ -285,6 +323,8 @@ Table `jansahayak-data` (PAY_PER_REQUEST), GSI1 on `GSI1PK`/`GSI1SK`:
 | Document | `DOC#<id>` | `METADATA` | `STATUS#<status>` |
 | Chunk | `DOC#<id>` | `CHUNK#<nnn>` | — |
 | QueryLog | `QUERY#<date>` | `LOG#<time>#<id>` | `QUERYLOGS` |
+
+`list_documents` with a status filter queries GSI1. Without a filter it falls back to a full table scan — avoid on large datasets.
 
 ## License
 
