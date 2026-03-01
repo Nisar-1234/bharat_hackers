@@ -37,8 +37,8 @@ ENV/
 *.pem
 .aws/
 lambda_deployment.zip
-# Ignore markdown files
-*.md
+lambda-trust-policy.json
+jansahayak-policy.json
 
 # Ignore shell scripts
 *.sh
@@ -95,5 +95,6 @@ env.json
 # Claude Code internal
 .claude/
 
-# Markdown files
+# Markdown files (README.md is explicitly excluded below)
 *.md
+!README.md
