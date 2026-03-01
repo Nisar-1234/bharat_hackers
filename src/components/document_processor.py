@@ -1,5 +1,6 @@
 """Document processing component."""
 import uuid
+import time
 from datetime import datetime
 from typing import List, Optional
 import boto3
@@ -8,6 +9,7 @@ from botocore.exceptions import ClientError
 from ..models.document import DocumentMetadata, DocumentChunk
 from ..models.enums import DocumentStatus
 from ..config import load_config
+from ..database.dynamodb_client import DynamoDBClient
 
 
 class FileTooLargeError(Exception):
@@ -36,6 +38,7 @@ class DocumentProcessor:
         self.s3_client = boto3.client('s3', region_name=self.config.region)
         self.textract_client = boto3.client('textract', region_name=self.config.region)
         self.bedrock_agent_client = boto3.client('bedrock-agent', region_name=self.config.region)
+        self.db = DynamoDBClient()
     
     async def upload_document(
         self, 
@@ -79,7 +82,7 @@ class DocumentProcessor:
                 ContentType=mime_type
             )
             
-            # Create metadata
+            # Create and persist metadata as PENDING
             metadata = DocumentMetadata(
                 document_id=document_id,
                 filename=filename,
@@ -90,50 +93,71 @@ class DocumentProcessor:
                 file_size_bytes=len(file_content),
                 mime_type=mime_type
             )
-            
-            # TODO: Store metadata in Aurora
-            
+            self.db.put_document(metadata)
+
+            # Run full processing pipeline inline
+            # (Document Lambda has 300s timeout — sufficient for OCR + chunking)
+            try:
+                self.db.update_document_status(document_id, DocumentStatus.PROCESSING)
+
+                extracted_text = await self.extract_text(s3_key, mime_type)
+                chunks = self.chunk_text(extracted_text, document_id)
+                await self.ingest_to_knowledge_base(chunks)
+
+                self.db.update_document_status(
+                    document_id, DocumentStatus.COMPLETED, chunk_count=len(chunks)
+                )
+                metadata.status = DocumentStatus.COMPLETED
+                metadata.chunk_count = len(chunks)
+            except Exception as processing_error:
+                self.db.update_document_status(document_id, DocumentStatus.FAILED)
+                metadata.status = DocumentStatus.FAILED
+                metadata.error_message = str(processing_error)
+
             return metadata
-            
+
         except ClientError as e:
             raise Exception(f"Failed to upload document: {str(e)}")
     
     async def extract_text(self, s3_key: str, mime_type: str) -> str:
-        """Extract text from document using Amazon Textract."""
+        """
+        Extract text from document using Amazon Textract.
+
+        Uses the async API (start/get) for PDFs to handle multi-page documents.
+        Uses the sync API for single-page images.
+        """
         try:
-            # Call Textract to analyze document
-            response = self.textract_client.analyze_document(
-                Document={
-                    'S3Object': {
-                        'Bucket': self.config.s3_bucket,
-                        'Name': s3_key
+            if mime_type == 'application/pdf':
+                all_blocks = self._extract_text_async(s3_key)
+            else:
+                response = self.textract_client.detect_document_text(
+                    Document={
+                        'S3Object': {
+                            'Bucket': self.config.s3_bucket,
+                            'Name': s3_key
+                        }
                     }
-                },
-                FeatureTypes=['LAYOUT']
-            )
-            
-            # Extract text while preserving paragraph structure
-            blocks = response.get('Blocks', [])
+                )
+                all_blocks = response.get('Blocks', [])
+
+            # Build text preserving page boundaries
             paragraphs = []
             current_paragraph = []
-            
-            for block in blocks:
+
+            for block in all_blocks:
                 if block['BlockType'] == 'LINE':
                     text = block.get('Text', '')
                     if text:
                         current_paragraph.append(text)
                 elif block['BlockType'] == 'PAGE' and current_paragraph:
-                    # End of page, finalize paragraph
                     paragraphs.append(' '.join(current_paragraph))
                     current_paragraph = []
-            
-            # Add any remaining text
+
             if current_paragraph:
                 paragraphs.append(' '.join(current_paragraph))
-            
-            # Join paragraphs with double newlines
+
             extracted_text = '\n\n'.join(paragraphs)
-            
+
             # Store extracted text in S3
             document_id = s3_key.split('/')[1]
             processed_key = f"processed/{document_id}/extracted_text.txt"
@@ -143,11 +167,49 @@ class DocumentProcessor:
                 Body=extracted_text.encode('utf-8'),
                 ContentType='text/plain'
             )
-            
+
             return extracted_text
-            
+
         except ClientError as e:
             raise Exception(f"Failed to extract text: {str(e)}")
+
+    def _extract_text_async(self, s3_key: str) -> list:
+        """Run Textract async job for multi-page PDFs and collect all blocks."""
+        # Start async detection job
+        start_response = self.textract_client.start_document_text_detection(
+            DocumentLocation={
+                'S3Object': {
+                    'Bucket': self.config.s3_bucket,
+                    'Name': s3_key
+                }
+            }
+        )
+        job_id = start_response['JobId']
+
+        # Poll until complete (Lambda has 300s timeout)
+        while True:
+            result = self.textract_client.get_document_text_detection(JobId=job_id)
+            status = result['JobStatus']
+
+            if status == 'SUCCEEDED':
+                break
+            elif status == 'FAILED':
+                raise Exception(f"Textract job failed: {result.get('StatusMessage', 'unknown')}")
+
+            time.sleep(2)
+
+        # Collect blocks from all pages (paginate through NextToken)
+        all_blocks = result.get('Blocks', [])
+        next_token = result.get('NextToken')
+
+        while next_token:
+            result = self.textract_client.get_document_text_detection(
+                JobId=job_id, NextToken=next_token
+            )
+            all_blocks.extend(result.get('Blocks', []))
+            next_token = result.get('NextToken')
+
+        return all_blocks
     
     def chunk_text(self, text: str, document_id: str) -> List[DocumentChunk]:
         """
@@ -194,9 +256,9 @@ class DocumentProcessor:
         return chunks
     
     async def ingest_to_knowledge_base(self, chunks: List[DocumentChunk]) -> bool:
-        """Store chunks in Amazon Bedrock Knowledge Base with Titan embeddings."""
+        """Store chunks in S3 and trigger Bedrock Knowledge Base ingestion job."""
         try:
-            # Store chunks in S3 for Knowledge Base ingestion
+            # Write chunk text files to the S3 path the KB data source watches
             for chunk in chunks:
                 chunk_key = f"kb-chunks/{chunk.document_id}/{chunk.chunk_id}.txt"
                 self.s3_client.put_object(
@@ -210,23 +272,33 @@ class DocumentProcessor:
                         'page_number': str(chunk.page_number)
                     }
                 )
-            
-            # Trigger Knowledge Base sync
-            # Note: In production, this would trigger a data source sync
-            # For now, we'll assume the KB is configured to auto-sync from S3
-            
-            # TODO: Store chunk metadata in Aurora with knowledge_base_id
-            
+
+            # Store chunk metadata in DynamoDB
+            self.db.put_chunks(chunks)
+
+            # Trigger Bedrock KB sync — look up data source ID dynamically
+            ds_response = self.bedrock_agent_client.list_data_sources(
+                knowledgeBaseId=self.config.knowledge_base_id,
+                maxResults=1
+            )
+            data_source_id = ds_response['dataSourceSummaries'][0]['dataSourceId']
+
+            self.bedrock_agent_client.start_ingestion_job(
+                knowledgeBaseId=self.config.knowledge_base_id,
+                dataSourceId=data_source_id
+            )
+
             return True
-            
+
         except ClientError as e:
             raise Exception(f"Failed to ingest to knowledge base: {str(e)}")
     
     async def get_document_status(self, document_id: str) -> DocumentMetadata:
         """Retrieve current processing status of a document."""
-        # TODO: Query Aurora for document metadata
-        # For now, return a placeholder
-        raise NotImplementedError("Database integration pending")
+        metadata = self.db.get_document(document_id)
+        if metadata is None:
+            raise Exception(f"Document {document_id} not found")
+        return metadata
     
     async def delete_document(self, document_id: str) -> bool:
         """Remove document from S3, Aurora, and Knowledge Base."""
@@ -254,9 +326,8 @@ class DocumentProcessor:
                             Delete={'Objects': objects_to_delete}
                         )
             
-            # TODO: Delete from Aurora (cascading delete will handle chunks)
-            # TODO: Delete from Knowledge Base
-            
+            self.db.delete_document(document_id)
+
             return True
             
         except ClientError as e:

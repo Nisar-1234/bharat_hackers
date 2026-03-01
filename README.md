@@ -49,7 +49,7 @@ Jansahayak uses GenAI to provide:
 └──────┬─────┘  └────────┬────────┘  │   Polly    │
        │                 │            └───┬────────┘
 ┌──────▼─────────────────▼────────────────▼────────┐
-│  S3 (Documents) │ Aurora PostgreSQL (Metadata)   │
+│    S3 (Documents)  │  DynamoDB (Metadata/Logs)   │
 └────────────────────────────────────────────────────┘
 ```
 
@@ -108,7 +108,7 @@ bharat_hackers/
 | **AI/ML** | Amazon Bedrock (Claude 3 Sonnet, Titan Embeddings) |
 | **OCR** | Amazon Textract |
 | **Voice** | AWS Transcribe, Translate, Polly |
-| **Storage** | Amazon S3, Aurora PostgreSQL |
+| **Storage** | Amazon S3, DynamoDB |
 | **IaC** | Terraform |
 
 ## 📦 Installation
@@ -143,11 +143,6 @@ cd infrastructure/terraform
 terraform init
 terraform plan
 terraform apply
-```
-
-5. **Initialize database**
-```bash
-psql -h <aurora-endpoint> -U admin -d jansahayak -f ../schema.sql
 ```
 
 See [DEPLOYMENT.md](DEPLOYMENT.md) for detailed instructions.
@@ -207,9 +202,9 @@ Once AWS credits are available, we will achieve:
 - User voice queries (audio files)
 
 ### Storage
-- **S3**: Raw documents, processed text, audio responses
-- **Aurora PostgreSQL**: Metadata, document chunks, query logs
-- **Bedrock Knowledge Base**: Vector embeddings for semantic search
+- **S3**: Raw documents, processed text, kb-chunks, audio responses
+- **DynamoDB**: Document metadata, chunk metadata, query logs (single-table design)
+- **Bedrock Knowledge Base**: Vector embeddings for semantic search (OpenSearch Serverless)
 
 ### Processing Pipeline
 ```

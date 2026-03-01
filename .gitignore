@@ -67,3 +67,18 @@ Thumbs.db
 # Database
 *.db
 *.sqlite3
+
+# Build artifacts
+lambda-package/
+
+# Test / temp files
+*.mp3
+*.pdf
+response.json
+upload_response.json
+
+# Contains real resource IDs / env values
+env.json
+
+# Claude Code internal
+.claude/
