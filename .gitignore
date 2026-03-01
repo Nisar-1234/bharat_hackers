@@ -22,9 +22,12 @@ wheels/
 
 # Virtual Environment
 venv/
+venv_backend/
+venv_ui/
 env/
 ENV/
 .venv
+*.venv
 
 # Environment Variables
 .env
@@ -34,7 +37,16 @@ ENV/
 *.pem
 .aws/
 lambda_deployment.zip
+# Ignore markdown files
+*.md
 
+# Ignore shell scripts
+*.sh
+
+# Ignore batch files
+*.bat
+
+*pdf
 # Terraform
 *.tfstate
 *.tfstate.*
@@ -82,3 +94,6 @@ env.json
 
 # Claude Code internal
 .claude/
+
+# Markdown files
+*.md
