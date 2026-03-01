@@ -7,6 +7,7 @@ from ..models.voice import TranscriptionResult, VoiceQueryResult
 from ..models.enums import SupportedLanguage
 from ..models.query import Citation
 from ..config import load_config
+from ..utils.circuit_breaker import CircuitBreaker
 from .query_engine import QueryEngine
 
 
@@ -32,6 +33,8 @@ class VoiceInterface:
         self.polly_client = boto3.client('polly', region_name=self.config.region)
         self.s3_client = boto3.client('s3', region_name=self.config.region)
         self.query_engine = QueryEngine()
+        self._translate_breaker = CircuitBreaker()
+        self._polly_breaker = CircuitBreaker()
     
     async def transcribe_audio(self, audio_bytes: bytes, language: SupportedLanguage) -> TranscriptionResult:
         """
@@ -109,7 +112,8 @@ class VoiceInterface:
             return text
         
         try:
-            response = self.translate_client.translate_text(
+            response = self._translate_breaker.call(
+                self.translate_client.translate_text,
                 Text=text,
                 SourceLanguageCode=source_language.value,
                 TargetLanguageCode='en'
@@ -117,14 +121,15 @@ class VoiceInterface:
             return response['TranslatedText']
         except ClientError as e:
             raise Exception(f"Translation failed: {str(e)}")
-    
+
     async def translate_from_english(self, text: str, target_language: SupportedLanguage) -> str:
         """Translate English text to regional language using Amazon Translate."""
         if target_language == SupportedLanguage.ENGLISH:
             return text
-        
+
         try:
-            response = self.translate_client.translate_text(
+            response = self._translate_breaker.call(
+                self.translate_client.translate_text,
                 Text=text,
                 SourceLanguageCode='en',
                 TargetLanguageCode=target_language.value
@@ -150,7 +155,8 @@ class VoiceInterface:
 
         try:
             voice_id, engine = voice_map[language]
-            response = self.polly_client.synthesize_speech(
+            response = self._polly_breaker.call(
+                self.polly_client.synthesize_speech,
                 Text=text,
                 OutputFormat='mp3',
                 VoiceId=voice_id,
@@ -199,7 +205,11 @@ class VoiceInterface:
                 ContentType='audio/mpeg'
             )
             
-            audio_url = f"s3://{self.config.s3_bucket}/{audio_key}"
+            audio_url = self.s3_client.generate_presigned_url(
+                'get_object',
+                Params={'Bucket': self.config.s3_bucket, 'Key': audio_key},
+                ExpiresIn=3600
+            )
             
         except Exception as e:
             # Fallback: return text response if synthesis fails
