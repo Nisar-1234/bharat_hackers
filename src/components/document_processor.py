@@ -10,6 +10,7 @@ from ..models.document import DocumentMetadata, DocumentChunk
 from ..models.enums import DocumentStatus
 from ..config import load_config
 from ..database.dynamodb_client import DynamoDBClient
+from ..utils.circuit_breaker import CircuitBreaker
 
 
 class FileTooLargeError(Exception):
@@ -39,6 +40,8 @@ class DocumentProcessor:
         self.textract_client = boto3.client('textract', region_name=self.config.region)
         self.bedrock_agent_client = boto3.client('bedrock-agent', region_name=self.config.region)
         self.db = DynamoDBClient()
+        self._textract_breaker = CircuitBreaker()
+        self._kb_breaker = CircuitBreaker()
     
     async def upload_document(
         self, 
@@ -130,7 +133,8 @@ class DocumentProcessor:
             if mime_type == 'application/pdf':
                 all_blocks = self._extract_text_async(s3_key)
             else:
-                response = self.textract_client.detect_document_text(
+                response = self._textract_breaker.call(
+                    self.textract_client.detect_document_text,
                     Document={
                         'S3Object': {
                             'Bucket': self.config.s3_bucket,

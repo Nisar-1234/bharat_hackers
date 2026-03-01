@@ -9,6 +9,7 @@ from botocore.exceptions import ClientError
 from ..models.query import QueryResult, Citation, RetrievedChunk
 from ..config import load_config
 from ..database.dynamodb_client import DynamoDBClient
+from ..utils.circuit_breaker import CircuitBreaker
 
 
 class QueryEngine:
@@ -19,6 +20,8 @@ class QueryEngine:
         self.bedrock_agent_runtime = boto3.client('bedrock-agent-runtime', region_name=self.config.region)
         self.bedrock_runtime = boto3.client('bedrock-runtime', region_name=self.config.region)
         self.db = DynamoDBClient()
+        self._kb_breaker = CircuitBreaker()
+        self._bedrock_breaker = CircuitBreaker()
     
     async def query(self, query_text: str, language: str = "en") -> QueryResult:
         """
@@ -73,7 +76,8 @@ class QueryEngine:
         Uses Titan embeddings to find most relevant document chunks.
         """
         try:
-            response = self.bedrock_agent_runtime.retrieve(
+            response = self._kb_breaker.call(
+                self.bedrock_agent_runtime.retrieve,
                 knowledgeBaseId=self.config.knowledge_base_id,
                 retrievalQuery={
                     'text': query_text
@@ -140,7 +144,8 @@ Answer:"""
         
         try:
             # Use Converse API — works for both Claude and Nova models
-            response = self.bedrock_runtime.converse(
+            response = self._bedrock_breaker.call(
+                self.bedrock_runtime.converse,
                 modelId=self.config.bedrock_model_id,
                 messages=[{"role": "user", "content": [{"text": prompt}]}],
                 inferenceConfig={"maxTokens": 1000, "temperature": 0.3}
