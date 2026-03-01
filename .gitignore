@@ -45,7 +45,7 @@ lambda_deployment.zip
 
 # Ignore batch files
 *.bat
-
+*.env.example
 *pdf
 # Terraform
 *.tfstate
