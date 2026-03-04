@@ -232,9 +232,15 @@ MP3 audio
 
 ## Resilience
 
-Every critical AWS service call is protected by two layers:
+Critical AWS service calls are protected by three layers:
 
-**Circuit breaker** (per service, `src/utils/circuit_breaker.py`):
+**1. DynamoDB response cache** — Repeated queries return cached answers instantly without hitting Bedrock. Cache key = SHA-256 of normalised query text. TTL = 24 hours. If Bedrock is unavailable, cached answers still serve returning users.
+
+**2. LLM fallback model** — `QueryEngine.generate_response()` tries `BEDROCK_MODEL_ID` first. If it receives a `ClientError` (throttle, model unavailable), it immediately retries with `BEDROCK_FALLBACK_MODEL_ID` (default: `amazon.nova-lite-v1:0`). Both models use the same Converse API — zero code change required.
+
+**3. Circuit breaker + retry** (per service):
+
+*Circuit breaker* (`src/utils/circuit_breaker.py`) — opens after 5 failures in 60 seconds; recovers after 30 seconds:
 
 | Component | Breaker | Protects |
 |-----------|---------|---------|
@@ -244,9 +250,7 @@ Every critical AWS service call is protected by two layers:
 | VoiceInterface | `_translate_breaker` | Translate (both directions) |
 | VoiceInterface | `_polly_breaker` | Polly `synthesize_speech()` |
 
-Opens after 5 failures in 60 seconds; recovers after 30 seconds.
-
-**Retry with exponential backoff** (`src/utils/retry.py`): max 3 retries, 1s base delay, 30s cap — applied to `ThrottlingException`, `ServiceUnavailableException`, `InternalServerException`.
+*Retry with exponential backoff* (`src/utils/retry.py`): max 3 retries, 1s base delay, 30s cap — applied via `@async_retry_with_backoff()` decorator on `retrieve_relevant_chunks()` and `generate_response()` — handles `ThrottlingException`, `ServiceUnavailableException`, `InternalServerException`.
 
 ## Testing
 
@@ -301,6 +305,29 @@ Handler format must be `src.handlers.<module>.handler` (e.g. `src.handlers.query
 
 See `AWS_SETUP.md` for full first-time AWS infrastructure setup, `DEPLOYMENT.md` for the deployment checklist, and `RUN.md` for end-to-end testing commands.
 
+## Architecture Decisions
+
+**Why DynamoDB, not RDS/Aurora?**
+We briefly implemented an Aurora PostgreSQL schema (see `infrastructure/schema.sql`) but switched to DynamoDB before the first working prototype. The reasons: Lambda cold starts with RDS require a VPC and incur connection overhead; DynamoDB is truly serverless and scales to zero cost with PAY_PER_REQUEST; our access patterns (point lookups by doc ID + status-filtered list queries) map cleanly to a single-table design with one GSI — no joins needed.
+
+**Why AWS Lambda, not EC2 or ECS?**
+The app has spiky, event-driven traffic: an upload is triggered once, a query fires in response to a user request. Lambda is zero-cost at idle, no server management, and each function type (document/query/voice) can have independent memory and timeout settings. EC2 or ECS would require always-on instances and a load balancer just to handle occasional hackathon-level traffic.
+
+**Why Bedrock Knowledge Base, not a custom embedding pipeline?**
+Bedrock KB manages the vector store (backed by OpenSearch Serverless), handles chunking and ingestion, and exposes a single `retrieve()` API. Building this with a custom embedding pipeline + pinecone/FAISS would require maintaining infrastructure, syncing on updates, and duplicating the chunking logic already present in our `DocumentProcessor`. KB lets us stay fully serverless with no extra services.
+
+**Why the Converse API, not `invoke_model()` directly?**
+The Converse API is model-agnostic — the same code path works for Claude 3 Sonnet, Claude 3.5 Haiku, and Amazon Nova (Lite/Pro/Micro). This lets us swap `BEDROCK_MODEL_ID` without touching application code, and is exactly what the LLM fallback uses: the primary model fails → fallback model is tried with the same request.
+
+**Why Amazon Translate + Polly over a multilingual LLM prompt?**
+Prompting Claude in Hindi/Telugu/Tamil works but costs more tokens (the full context + prompt in a regional language) and output quality for low-resource languages like Telugu is inconsistent. Using Translate lets the RAG pipeline operate in English (where embeddings are strongest) and translate only the final answer. Polly adds TTS without any additional LLM call. The total cost per voice query is lower and latency is more predictable.
+
+**Why S3 for document storage, not DynamoDB?**
+DynamoDB items have a 400KB limit. PDF documents and extracted text regularly exceed this. S3 is the right store for arbitrary-size blobs; DynamoDB holds only structured metadata and chunk indexes that are always small.
+
+**Why response caching in DynamoDB?**
+Once the Knowledge Base is loaded, the same citizen question (e.g., "PM-KISAN eligibility") will be asked repeatedly. Caching the Bedrock response by a hash of the normalised query avoids redundant embedding + LLM calls, reducing both latency and AWS cost. Cache items use DynamoDB's built-in TTL to expire after 24 hours so stale answers are automatically evicted.
+
 ## Key Configuration
 
 All settings are loaded by `src/config.py` from environment variables:
@@ -312,6 +339,7 @@ All settings are loaded by `src/config.py` from environment variables:
 | `DYNAMODB_TABLE_NAME` | `jansahayak-data` | |
 | `KNOWLEDGE_BASE_ID` | *(required)* | Created in Bedrock console |
 | `BEDROCK_MODEL_ID` | `anthropic.claude-3-sonnet-20240229-v1:0` | Any Converse-compatible model works |
+| `BEDROCK_FALLBACK_MODEL_ID` | `amazon.nova-lite-v1:0` | Used if primary model throttles |
 | `TITAN_EMBEDDING_MODEL_ID` | `amazon.titan-embed-text-v1` | |
 
 ## DynamoDB Schema
@@ -323,8 +351,9 @@ Table `jansahayak-data` (PAY_PER_REQUEST), GSI1 on `GSI1PK`/`GSI1SK`:
 | Document | `DOC#<id>` | `METADATA` | `STATUS#<status>` |
 | Chunk | `DOC#<id>` | `CHUNK#<nnn>` | — |
 | QueryLog | `QUERY#<date>` | `LOG#<time>#<id>` | `QUERYLOGS` |
+| Cache | `CACHE#<sha256>` | `RESPONSE` | — |
 
-`list_documents` with a status filter queries GSI1. Without a filter it falls back to a full table scan — avoid on large datasets.
+`list_documents` with a status filter queries GSI1. Without a filter it falls back to a full table scan — avoid on large datasets. Cache items have a `ttl` attribute (epoch seconds); DynamoDB TTL auto-deletes expired entries.
 
 ## License
 

@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import json
 from datetime import datetime
+from audio_recorder_streamlit import audio_recorder
 
 # Page configuration
 st.set_page_config(
@@ -66,10 +67,17 @@ st.markdown("---")
 with st.sidebar:
     st.image("https://upload.wikimedia.org/wikipedia/commons/thumb/4/41/Flag_of_India.svg/320px-Flag_of_India.svg.png", width=100)
     st.title("Navigation")
-    
+
+    pages = [" Home", " Upload Document", " Text Query", " Voice Query", " Document Library"]
+    # Honour navigation from Home page buttons
+    default_index = 0
+    if "page" in st.session_state and st.session_state.page in pages:
+        default_index = pages.index(st.session_state.page)
+
     page = st.radio(
         "Select a feature:",
-        [" Home", " Upload Document", " Text Query", " Voice Query", " Document Library"],
+        pages,
+        index=default_index,
         label_visibility="collapsed"
     )
     
@@ -255,8 +263,8 @@ elif page == " Text Query":
 
 elif page == " Voice Query":
     st.header(" Voice Query")
-    st.markdown("Upload an audio file with your question. Get a voice response back.")
-    
+    st.markdown("Speak your question or upload an audio file. Get a voice response back.")
+
     # Language selection
     language_map = {
         "English": "en",
@@ -264,75 +272,107 @@ elif page == " Voice Query":
         "తెలుగు (Telugu)": "te",
         "தமிழ் (Tamil)": "ta"
     }
-    
+
     selected_language = st.selectbox(
         "Select Language",
         options=list(language_map.keys()),
         index=0,
         key="voice_lang"
     )
-    
+
     language_code = language_map[selected_language]
-    
-    # Audio file upload
-    audio_file = st.file_uploader(
-        "Upload Audio File",
-        type=["mp3", "wav", "flac"],
-        help="Supported formats: MP3, WAV, FLAC"
+
+    # --- Two input modes: Mic or File upload ---
+    input_mode = st.radio(
+        "How would you like to ask?",
+        ["Record with Microphone", "Upload Audio File"],
+        horizontal=True,
+        key="voice_input_mode",
     )
-    
-    if audio_file is not None:
-        st.audio(audio_file, format=f"audio/{audio_file.type.split('/')[-1]}")
-        
-        if st.button(" Process Voice Query", type="primary"):
-            with st.spinner("Processing voice query... This may take 30-60 seconds."):
-                try:
-                    files = {
-                        "audio": (audio_file.name, audio_file.getvalue(), audio_file.type)
-                    }
-                    data = {"language": language_code}
-                    
-                    response = requests.post(
-                        f"{API_ENDPOINT}/query/voice",
-                        files=files,
-                        data=data,
-                        timeout=60
-                    )
-                    
-                    if response.status_code == 200:
-                        result = response.json()
-                        
-                        # Display transcription
-                        st.markdown("###  Transcription")
-                        st.info(result.get("transcribed_text", "N/A"))
-                        
-                        # Display answer
-                        st.markdown("###  Answer")
-                        st.success(result.get("answer_text", "No answer available"))
-                        
-                        # Display audio response
-                        audio_url = result.get("audio_url")
-                        if audio_url:
-                            st.markdown("###  Voice Response")
+
+    audio_bytes = None
+    audio_filename = "recording.wav"
+
+    if input_mode == "Record with Microphone":
+        st.markdown("Click the mic icon below, speak your question, then click again to stop.")
+        recorded = audio_recorder(
+            text="",
+            recording_color="#e74c3c",
+            neutral_color="#138808",
+            icon_size="2x",
+            pause_threshold=3.0,
+            key="voice_recorder",
+        )
+        if recorded:
+            audio_bytes = recorded
+            audio_filename = "recording.wav"
+            st.audio(recorded, format="audio/wav")
+            st.success("Recording captured! Click 'Get Answer' to process.")
+    else:
+        audio_file = st.file_uploader(
+            "Upload Audio File",
+            type=["mp3", "wav", "flac"],
+            help="Supported formats: MP3, WAV, FLAC",
+        )
+        if audio_file is not None:
+            audio_bytes = audio_file.getvalue()
+            audio_filename = audio_file.name
+            st.audio(audio_bytes, format=audio_file.type or "audio/mpeg")
+
+    # --- Process button ---
+    if audio_bytes and st.button("Get Answer", type="primary"):
+        with st.spinner("Processing voice query... This may take 30-60 seconds."):
+            try:
+                mime = "audio/wav" if audio_filename.endswith(".wav") else "audio/mpeg"
+                files = {"audio": (audio_filename, audio_bytes, mime)}
+                data = {"language": language_code}
+
+                response = requests.post(
+                    f"{API_ENDPOINT}/query/voice",
+                    files=files,
+                    data=data,
+                    timeout=180,
+                )
+
+                if response.status_code == 200:
+                    result = response.json()
+
+                    # Display transcription
+                    st.markdown("### Transcription")
+                    st.info(result.get("transcribed_text", "N/A"))
+
+                    # Display answer
+                    st.markdown("### Answer")
+                    st.success(result.get("answer_text", "No answer available"))
+
+                    # Display audio response
+                    audio_url = result.get("audio_url")
+                    if audio_url:
+                        st.markdown("### Voice Response")
+                        try:
+                            audio_resp = requests.get(audio_url, timeout=15)
+                            audio_resp.raise_for_status()
+                            st.audio(audio_resp.content, format="audio/mpeg")
+                        except Exception:
                             st.audio(audio_url)
-                        
-                        # Display citations
-                        citations = result.get("citations", [])
-                        if citations:
-                            st.markdown("###  Sources")
-                            for i, citation in enumerate(citations, 1):
-                                with st.expander(f"Citation {i}: {citation.get('document_name', 'N/A')}"):
-                                    st.write(f"**Page:** {citation.get('page_number', 'N/A')}")
-                                    st.write(f"**Section:** {citation.get('clause_reference', 'N/A')}")
-                                    st.write(f"**Excerpt:** {citation.get('excerpt', 'N/A')}")
-                                    st.write(f"**Confidence:** {citation.get('confidence_score', 0):.2%}")
-                    else:
-                        error_data = response.json()
-                        st.error(f" Voice query failed: {error_data.get('message', 'Unknown error')}")
-                except requests.exceptions.Timeout:
-                    st.error("⏱ Request timed out. Voice processing can take up to 60 seconds.")
-                except Exception as e:
-                    st.error(f" Error: {str(e)}")
+
+                    # Display citations
+                    citations = result.get("citations", [])
+                    if citations:
+                        st.markdown("### Sources")
+                        for i, citation in enumerate(citations, 1):
+                            with st.expander(f"Citation {i}: {citation.get('document_name', 'N/A')}"):
+                                st.write(f"**Page:** {citation.get('page_number', 'N/A')}")
+                                st.write(f"**Section:** {citation.get('clause_reference', 'N/A')}")
+                                st.write(f"**Excerpt:** {citation.get('excerpt', 'N/A')}")
+                                st.write(f"**Confidence:** {citation.get('confidence_score', 0):.2%}")
+                else:
+                    error_data = response.json()
+                    st.error(f"Voice query failed: {error_data.get('message', 'Unknown error')}")
+            except requests.exceptions.Timeout:
+                st.error("Request timed out. Voice processing can take up to 60 seconds.")
+            except Exception as e:
+                st.error(f"Error: {str(e)}")
 
 elif page == " Document Library":
     st.header(" Document Library")

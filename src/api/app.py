@@ -159,13 +159,15 @@ async def query_voice(
     try:
         # Read audio content
         audio_bytes = await audio.read()
-        
+
         # Parse language
         lang_enum = SupportedLanguage(language)
-        
-        # Process voice query
-        result = await voice_interface.process_voice_query(audio_bytes, lang_enum)
-        
+
+        # Process voice query (pass filename for format detection)
+        result = await voice_interface.process_voice_query(
+            audio_bytes, lang_enum, filename=audio.filename or ""
+        )
+
         # Convert citations to response model
         citations = [
             CitationResponse(
@@ -178,18 +180,18 @@ async def query_voice(
             )
             for c in result.citations
         ]
-        
+
         return VoiceQueryResponse(
             transcribed_text=result.transcribed_text,
             answer_text=result.answer_text,
             audio_url=result.audio_url,
             citations=citations
         )
-        
+
     except ValueError:
         raise HTTPException(status_code=400, detail=f"Unsupported language: {language}")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        return create_error_response(e, context={"path": "/query/voice"})
 
 
 @app.exception_handler(Exception)

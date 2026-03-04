@@ -1,4 +1,6 @@
 """DynamoDB client for Jansahayak."""
+import json
+import time as _time
 import boto3
 from datetime import datetime
 from typing import List, Optional
@@ -240,4 +242,48 @@ class DynamoDBClient:
             return True
         except ClientError as e:
             print(f"Error logging query: {e}")
+            return False
+
+    # ── Response cache operations ─────────────────────────────────────────────
+
+    def get_cached_response(self, query_hash: str) -> Optional[dict]:
+        """Retrieve a cached query response. Returns None if not found or expired."""
+        try:
+            response = self.table.get_item(
+                Key={'PK': f'CACHE#{query_hash}', 'SK': 'RESPONSE'}
+            )
+            if 'Item' not in response:
+                return None
+            item = response['Item']
+            # Respect TTL (DynamoDB TTL deletion is eventual; check manually)
+            if int(item.get('ttl', 0)) < int(_time.time()):
+                return None
+            return item
+        except ClientError as e:
+            print(f"Cache get error (non-fatal): {e}")
+            return None
+
+    def put_cached_response(
+        self,
+        query_hash: str,
+        answer: str,
+        citations: list,
+        ttl_seconds: int = 86400,
+    ) -> bool:
+        """Store a query response in cache with TTL."""
+        try:
+            self.table.put_item(
+                Item={
+                    'PK': f'CACHE#{query_hash}',
+                    'SK': 'RESPONSE',
+                    'EntityType': 'Cache',
+                    'answer': answer,
+                    'citations': json.dumps(citations),
+                    'ttl': int(_time.time()) + ttl_seconds,
+                    'created_at': datetime.utcnow().isoformat(),
+                }
+            )
+            return True
+        except ClientError as e:
+            print(f"Cache put error (non-fatal): {e}")
             return False
