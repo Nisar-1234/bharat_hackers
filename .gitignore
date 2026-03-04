@@ -65,6 +65,7 @@ jansahayak-policy.json
 .coverage
 htmlcov/
 .tox/
+test_results/
 
 # Logs
 *.log
@@ -94,6 +95,9 @@ env.json
 
 # Claude Code internal
 .claude/
+
+# Hackathon submission files (PPT, content notes)
+submission/
 
 # Markdown files (README.md is explicitly excluded below)
 *.md

@@ -70,13 +70,13 @@ class CircuitBreaker:
             return result
             
         except Exception as e:
+            # Reset count if window expired before recording new failure
+            self._reset_failure_count_if_needed()
+
             # Record failure
             self.failure_count += 1
             self.last_failure_time = time.time()
-            
-            # Reset count if window expired
-            self._reset_failure_count_if_needed()
-            
+
             # Open circuit if threshold exceeded
             if self.failure_count >= self.failure_threshold:
                 self.state = CircuitState.OPEN

@@ -16,6 +16,7 @@ class AWSConfig:
     knowledge_base_id: str
     bedrock_model_id: str
     titan_embedding_model_id: str
+    bedrock_fallback_model_id: str
 
 
 def load_config() -> AWSConfig:
@@ -28,4 +29,5 @@ def load_config() -> AWSConfig:
         knowledge_base_id=os.getenv("KNOWLEDGE_BASE_ID", ""),
         bedrock_model_id=os.getenv("BEDROCK_MODEL_ID", "anthropic.claude-3-sonnet-20240229-v1:0"),
         titan_embedding_model_id=os.getenv("TITAN_EMBEDDING_MODEL_ID", "amazon.titan-embed-text-v1"),
+        bedrock_fallback_model_id=os.getenv("BEDROCK_FALLBACK_MODEL_ID", "amazon.nova-lite-v1:0"),
     )
