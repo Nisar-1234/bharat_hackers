@@ -10,9 +10,6 @@ pytest>=7.4.0
 hypothesis>=6.92.0
 pytest-asyncio>=0.23.0
 
-# AWS SDK extras
-aioboto3>=12.3.0
-
 # Utilities
 python-multipart>=0.0.6
 requests>=2.31.0
