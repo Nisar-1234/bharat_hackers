@@ -185,7 +185,7 @@ elif page == " Upload Document":
 elif page == " Text Query":
     st.header(" Ask a Question")
     st.markdown("Ask questions about government schemes. Get accurate answers with source citations.")
-    
+
     # Language selection
     language_map = {
         "English": "en",
@@ -193,20 +193,42 @@ elif page == " Text Query":
         "తెలుగు (Telugu)": "te",
         "தமிழ் (Tamil)": "ta"
     }
-    
+
     selected_language = st.selectbox(
         "Select Language",
         options=list(language_map.keys()),
         index=0
     )
-    
+
     language_code = language_map[selected_language]
-    
+
+    # Sample questions — click to prefill
+    st.markdown("**Try a sample question:**")
+    sample_questions = [
+        "What is the eligibility criteria for PM-KISAN scheme?",
+        "What are the benefits under Ayushman Bharat health insurance?",
+        "Who is eligible for PM Ujjwala Yojana free LPG connection?",
+        "What documents are required to apply for the scheme?",
+        "How much financial assistance is provided under PM Awas Yojana?",
+    ]
+
+    if "prefill_query" not in st.session_state:
+        st.session_state.prefill_query = ""
+
+    cols = st.columns(len(sample_questions))
+    for i, (col, q) in enumerate(zip(cols, sample_questions)):
+        with col:
+            short_label = q[:30] + "…" if len(q) > 30 else q
+            if st.button(short_label, key=f"sample_{i}"):
+                st.session_state.prefill_query = q
+
     # Query input
     query_text = st.text_area(
         "Your Question",
+        value=st.session_state.prefill_query,
         placeholder="Example: What is the eligibility criteria for PM-KISAN scheme?",
-        height=100
+        height=100,
+        key="query_input",
     )
     
     if st.button(" Get Answer", type="primary"):
