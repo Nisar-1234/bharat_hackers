@@ -312,8 +312,11 @@ elif page == " Voice Query":
         key="voice_input_mode",
     )
 
-    audio_bytes = None
-    audio_filename = "recording.wav"
+    # Initialise session state keys for voice audio
+    if "voice_audio_bytes" not in st.session_state:
+        st.session_state.voice_audio_bytes = None
+    if "voice_audio_filename" not in st.session_state:
+        st.session_state.voice_audio_filename = "recording.wav"
 
     if input_mode == "Record with Microphone":
         st.markdown("Click the mic icon below, speak your question, then click again to stop.")
@@ -326,9 +329,11 @@ elif page == " Voice Query":
             key="voice_recorder",
         )
         if recorded:
-            audio_bytes = recorded
-            audio_filename = "recording.wav"
-            st.audio(recorded, format="audio/wav")
+            # Persist audio so it survives the re-run triggered by "Get Answer"
+            st.session_state.voice_audio_bytes = recorded
+            st.session_state.voice_audio_filename = "recording.wav"
+        if st.session_state.voice_audio_bytes:
+            st.audio(st.session_state.voice_audio_bytes, format="audio/wav")
             st.success("Recording captured! Click 'Get Answer' to process.")
     else:
         audio_file = st.file_uploader(
@@ -337,15 +342,23 @@ elif page == " Voice Query":
             help="Supported formats: MP3, WAV, FLAC",
         )
         if audio_file is not None:
-            audio_bytes = audio_file.getvalue()
-            audio_filename = audio_file.name
-            st.audio(audio_bytes, format=audio_file.type or "audio/mpeg")
+            st.session_state.voice_audio_bytes = audio_file.getvalue()
+            st.session_state.voice_audio_filename = audio_file.name
+            st.audio(st.session_state.voice_audio_bytes, format=audio_file.type or "audio/mpeg")
+
+    audio_bytes = st.session_state.voice_audio_bytes
+    audio_filename = st.session_state.voice_audio_filename
 
     # --- Process button ---
-    if audio_bytes and st.button("Get Answer", type="primary"):
+    if audio_bytes and st.button("Get Answer", type="primary", key="voice_get_answer"):
         with st.spinner("Processing voice query... This may take 30-60 seconds."):
             try:
-                mime = "audio/wav" if audio_filename.endswith(".wav") else "audio/mpeg"
+                if audio_filename.endswith(".wav"):
+                    mime = "audio/wav"
+                elif audio_filename.endswith(".flac"):
+                    mime = "audio/flac"
+                else:
+                    mime = "audio/mpeg"
                 files = {"audio": (audio_filename, audio_bytes, mime)}
                 data = {"language": language_code}
 
