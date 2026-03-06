@@ -76,7 +76,12 @@ def format_error_response(
     elif "NotFound" in error_type:
         category = ErrorCategory.DOCUMENT_NOT_FOUND
     elif "Transcription" in error_type:
-        category = ErrorCategory.TRANSCRIPTION_FAILED
+        # Pass through the actual transcription error message so user sees what went wrong
+        return {
+            "error": True,
+            "message": str(error),
+            "error_type": error_type
+        }
     elif "ServiceUnavailable" in error_type or "Throttling" in error_type:
         category = ErrorCategory.SERVICE_UNAVAILABLE
     elif "ValidationError" in error_type:

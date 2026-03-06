@@ -140,7 +140,8 @@ class VoiceInterface:
                     )
 
                 elif job_status == 'FAILED':
-                    raise TranscriptionError("Transcription job failed. Please try again with clearer audio.")
+                    reason = status['TranscriptionJob'].get('FailureReason', 'Unknown reason')
+                    raise TranscriptionError(f"Transcription job failed: {reason}")
 
                 await asyncio.sleep(2)
                 elapsed += 2
@@ -250,10 +251,18 @@ class VoiceInterface:
         """
         # Step 1: Transcribe audio
         transcription = await self.transcribe_audio(audio_bytes, language, filename=filename)
-        
+
+        if not transcription.text.strip():
+            raise TranscriptionError(
+                "No speech detected in the audio. Please speak clearly into the microphone and try again."
+            )
+
         # Step 2: Translate to English
         english_query = await self.translate_to_english(transcription.text, language)
-        
+
+        if not english_query.strip():
+            raise TranscriptionError("Translation produced empty text. Please try again.")
+
         # Step 3: Query Knowledge Base
         query_result = await self.query_engine.query(english_query, language='en')
         
