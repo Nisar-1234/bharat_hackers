@@ -10,7 +10,7 @@ from audio_recorder_streamlit import audio_recorder
 # Page configuration
 st.set_page_config(
     page_title="Jansahayak - जनसहायक",
-    page_icon="",
+    page_icon="\U0001f1ee\U0001f1f3",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -65,7 +65,7 @@ st.markdown("---")
 
 # Sidebar
 with st.sidebar:
-    st.image("https://upload.wikimedia.org/wikipedia/commons/thumb/4/41/Flag_of_India.svg/320px-Flag_of_India.svg.png", width=100)
+    st.markdown("## \U0001f1ee\U0001f1f3 Jansahayak")
     st.title("Navigation")
 
     pages = [" Home", " Upload Document", " Text Query", " Voice Query", " Document Library"]
